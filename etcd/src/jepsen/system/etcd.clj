@@ -18,6 +18,7 @@
             [slingshot.slingshot      :refer [try+]]
             [verschlimmbesserung.core :as v]))
 
+(def etcd-git-tag-version "tags/v2.0.8")
 (def binary "/opt/etcd/bin/etcd")
 (def pidfile "/var/run/etcd.pid")
 (def data-dir "/var/lib/etcd")
@@ -69,12 +70,13 @@
           :--
           :-data-dir        data-dir
           :-name            (name node)
-          :-advertise-client-urls (cluster-url node)
-          :-listen-peer-urls (cluster-url node)
           :-listen-client-urls (listen-client-url node)
+          :-advertise-client-urls (listen-client-url node)
+          :-listen-peer-urls (cluster-url node)
           :-initial-advertise-peer-urls (cluster-url node)
+          :-initial-cluster-token "etcd-cluster-1"
+          :-initial-cluster (str "'" (peers test) "'")
           :-initial-cluster-state "new"
-          :-initial-cluster (peers test)
           :>>               log-file
           (c/lit "2>&1")))
 
@@ -87,11 +89,14 @@
 
         (c/su
           (c/cd "/opt"
+                ;(c/exec :rm :-rf "/opt/etcd")
                 (when-not (cu/file? "etcd")
                   (info node "cloning etcd")
                   (c/exec :git :clone "https://github.com/coreos/etcd")))
 
           (c/cd "/opt/etcd"
+                (c/exec :git :checkout etcd-git-tag-version)
+                (info node (str "git checkout " etcd-git-tag-version))
                 (when-not (cu/file? "bin/etcd")
                   (info node "building etcd")
                   (c/exec (c/lit "./build"))))
@@ -135,8 +140,11 @@
             (Thread/sleep 2000)
             (swap! running assoc node (running?)))
 
+          (Thread/sleep 2000)
+
           ; And spin some more until Raft is ready
-          (let [c (v/connect (str "http://" (name node) ":2379"))]
+          (let [c (v/connect (str "http://" (name node) ":2379") {:timeout 7000})]
+            (info node c)
             (while (try+ (v/reset! c :test "ok") false
                          (catch [:status 500] e true)
                          (catch [:status 307] e true))
@@ -153,7 +161,7 @@
 (defrecord CASClient [k client]
   client/Client
   (setup! [this test node]
-    (let [client (v/connect (str "http://" (name node) ":2379"))]
+    (let [client (v/connect (str "http://" (name node) ":2379") {:timeout 20000})]
       (v/reset! client k (json/generate-string nil))
       (assoc this :client client)))
 
